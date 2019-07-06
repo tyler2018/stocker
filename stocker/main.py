@@ -1,8 +1,10 @@
-from stocker import ts
-from stocker.dbHelper import get_valid_date
-from stocker.strategy import ma_divergency, close_filter
+import os
+import time
+
+from stocker import ts, pd
+from stocker.dbHelper import get_last_valid_trade_date
+from stocker.strategy import ma_divergency, close_filter, name_filter
 from stocker.trader import screen_stock
-import datetime
 
 if __name__ == "__main__":
     print("tushare version:" + ts.__version__)
@@ -12,15 +14,19 @@ if __name__ == "__main__":
     # dbHelper.fetch_calender()
     # 补全数据，每周补全一次
     # dbHelper.fetch_data()
+    # 创建索引，不删除集合的情况下只用执行一次。
+    # dbHelper.create_index()
     # 选股操作 ===========================
-    # [市场,选股日期,[func,param],[func,param]]
-    # 设置选股日期为最后一个有效交易日
-    # 获取当天的日期，去掉时间
-    str_cur_date = datetime.datetime.now().strftime("%Y%m%d")
-    cur_trade_date = datetime.datetime.strptime(str_cur_date, '%Y%m%d')
-    # 获取有效的最后一个交易日
-    cur_trade_date = get_valid_date(cur_trade_date)
-    screen_date = cur_trade_date
-    strategies = ['ALL', screen_date, [ma_divergency, [10, 25, 43, 60]], [close_filter, [0, 25]]]
 
-    screen_stock(strategies)
+    # 设置选股日期为最后一个有效交易日
+    valid_screen_date = get_last_valid_trade_date()
+    # [[func,param],[func,param]]
+    strategies = [[name_filter, ['ST']], [close_filter, 25], [ma_divergency, [10, 25, 43, 60]]]
+    # 市场,选股日期,[[func,param],[func,param]]
+    pickup_list = screen_stock('ALL', valid_screen_date, strategies)
+    print('选股策略执行完毕')
+    # 获得当前时间
+    otherStyleTime = time.strftime("%Y-%m-%d %H_%M_%S", time.localtime())
+    df = pd.DataFrame(pickup_list, columns=['code', 'name'])
+    curPath = os.path.split(os.path.realpath(__file__))[0]
+    df.to_csv(curPath + '/' + otherStyleTime + '_maDivergency.csv', index=False, encoding='utf_8_sig')

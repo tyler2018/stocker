@@ -11,6 +11,59 @@ conn = pymongo.MongoClient('127.0.0.1', 27017)
 db = conn['stock']
 
 
+def create_index():
+    t_codes = db['codes']
+    all_index = t_codes.index_information()
+    # print(list(all_index))
+    # 判断有无索引
+    has_id_index = all_index.get("idx_ts_code", False)
+    if has_id_index:
+        # 是否为唯一索引
+        if all_index['idx_ts_code'].get('unique', False):
+            pass
+        else:
+            t_codes.drop_index("idx_ts_code")
+            t_codes.create_index([("ts_code", 1)], name='idx_ts_code', unique=True, background=True)  # 尝试创建唯一索引
+    else:
+        t_codes.create_index([("ts_code", 1)], name='idx_ts_code', unique=True, background=True)  # 尝试创建唯一索引
+
+    t_calender = db['calender']
+    all_index = t_calender.index_information()
+    # print(list(all_index))
+    # 判断有无索引
+    has_id_index = all_index.get("idx_cal_date", False)
+    if has_id_index:
+        # 是否为唯一索引
+        if all_index['idx_cal_date'].get('unique', False):
+            pass
+        else:
+            t_calender.drop_index("idx_cal_date")
+            t_calender.create_index([("cal_date", 1)], name='idx_cal_date', unique=True, background=True)  # 尝试创建唯一索引
+    else:
+        t_calender.create_index([("cal_date", 1)], name='idx_cal_date', unique=True, background=True)  # 尝试创建唯一索引
+
+    codes = get_code('ALL')
+    for row in codes:
+        t_code = db[row['ts_code']]
+
+        all_index = t_code.index_information()
+        # print(list(all_index))
+        # 判断有无索引
+        has_id_index = all_index.get("idx_trade_date", False)
+        if has_id_index:
+            # 是否为唯一索引
+            if all_index['idx_trade_date'].get('unique', False):
+                pass
+            else:
+                t_code.drop_index("idx_trade_date")
+                t_code.create_index([("trade_date", pymongo.ASCENDING)], name='idx_trade_date', unique=True,
+                                    background=True)
+        else:
+            t_code.create_index([("trade_date", pymongo.ASCENDING)], name='idx_trade_date', unique=True,
+                                background=True)
+    print('创建索引完毕')
+
+
 def fetch_code():
     """
     从接口获取代码，存入数据库，返回结构样例
@@ -74,7 +127,7 @@ def fetch_data():
     str_cur_date = datetime.datetime.now().strftime("%Y%m%d")
     cur_trade_date = datetime.datetime.strptime(str_cur_date, '%Y%m%d')
     # 获取有效的上一个交易日
-    cur_trade_date = get_valid_date(cur_trade_date)
+    cur_trade_date = get_previouse_valid_date(cur_trade_date)
     # 访问接口计数器，避免超时发生
     timeout_count = 0
     for row in codes:
@@ -83,14 +136,15 @@ def fetch_data():
         fetch_data_interval = 3
         # 每个代码创建一个集合
         t_codes = db[row['ts_code']]
+
         row_cnt = t_codes.count_documents({}, limit=1)
-        # 获取起始日期
+        # 有数据已存在，获取起始日期，补全数据
         if row_cnt:
             results = t_codes.find().sort('trade_date', pymongo.DESCENDING).limit(1)
             start_trade_date = datetime.datetime.strptime(results[0]['trade_date'], '%Y%m%d')
             start_trade_date = start_trade_date + datetime.timedelta(days=1)
-            # 获取有效的上一个交易日
-            start_trade_date = get_valid_date(start_trade_date)
+            # 获取有效的下一个交易日
+            start_trade_date = get_next_valid_date(start_trade_date)
             print(row['ts_code'] + ' has data exist before: ' + start_trade_date.strftime('%Y%m%d'))
         else:
             # 没有数据存在从上市第一天开始获取数据
@@ -138,9 +192,28 @@ def fetch_data():
     print('市场数据补全完毕')
 
 
-def get_valid_date(base_date):
+def get_next_valid_date(base_date):
     """
-    根据参数向前找出合法的交易日，跳过节假日，休息日
+    根据参数向后找出合法的交易日，跳过节假日，休息日
+    :return:
+    """
+    next_base_date = base_date + datetime.timedelta(days=10)
+    t_calender = db['calender']
+    result = t_calender.find(
+        {'cal_date': {'$gte': base_date.strftime('%Y%m%d'),
+                      '$lte': next_base_date.strftime('%Y%m%d')}}).sort('cal_date',
+                                                                        pymongo.ASCENDING)
+    for value in result:
+        if value['is_open']:
+            return datetime.datetime.strptime(value['cal_date'], '%Y%m%d')
+    print('Warning: 未找到有效交易日期')
+    return base_date
+
+
+def get_previouse_valid_date(base_date):
+    """
+    根据参数向前找出合法的交易日，跳过节假日，休息日。
+    注意：该函数可能未找到有效日期，会返回传入的日期，调用者需要做判断。
     :return:
     """
     pre_base_date = base_date - datetime.timedelta(days=10)
@@ -189,4 +262,19 @@ def get_data(code, start_date, end_date):
                                                     '$lte': end_date.strftime('%Y%m%d')}})
     labels = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount']
     df = pd.DataFrame(list(cursor_result), columns=labels)
+    df['name'] = code['name']
     return df
+
+
+def get_last_valid_trade_date():
+    """
+    获取最后一个有效交易日期
+    :return: 返回最后一个有效交易日
+    """
+    # 获取当天的日期，去掉时间
+    str_cur_date = datetime.datetime.now().strftime("%Y%m%d")
+    # 转换为日期对象
+    cur_trade_date = datetime.datetime.strptime(str_cur_date, '%Y%m%d')
+    # 获取有效的最后一个交易日
+    cur_trade_date = get_previouse_valid_date(cur_trade_date)
+    return cur_trade_date
